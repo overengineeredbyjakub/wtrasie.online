@@ -1,0 +1,1105 @@
+openapi: 3.0.3
+info:
+  title: myBus 2.x ("myBus online") public API
+  version: 2.8.13
+  description: |
+    Unofficial, reverse-engineered specification of the undocumented HTTP API used by the Android
+    app **myBus online** (`com.taran.mybus` 2.8.13, R&G PLUS Sp. z o.o.).
+
+    The API has three layers:
+
+    1. **Per-city schedule services** (WCF `.svc`, XML) — one deployment per transit network
+       (54 registered in the app). Base URL examples are listed under `servers`; the full registry
+       ships with this documentation (`cities.json` / `README.md`).
+    2. **Central config API** (JSON, `https://shared.mybus.rg.com.pl/api/v1/config`).
+    3. **Legacy global config service** (XML, `taran.com.pl`).
+
+    ### Access handshake (per-city services only)
+
+    Every per-city request must carry:
+
+    ```
+    User-Agent: myBusOnline
+    Age: <token> + <sum of Unicode code points of the city's clientCode>
+    ```
+
+    1. Call `PingService` with the bootstrap token `60`.
+    2. The response `<int>T</int>` carries the current server token (e.g. `2054` on 2026-11-17).
+    3. Use `T` for every subsequent call.
+
+    Any deviation yields `400` with body
+    `<string xmlns="http://schemas.microsoft.com/2003/10/Serialization/">Unauthorized access</string>`.
+
+    All endpoints are read-only `GET`s returning public timetable data. Responses are XML with
+    attribute-based models. This spec models attributes as JSON properties with `xml: attribute: true`.
+
+    Verified live on 2026-11-17 (see README "Live verification log").
+  contact:
+    name: Unofficial documentation (community)
+  license:
+    name: Documentation of a public interface; use responsibly
+    url: https://example.org/none
+
+servers:
+  - url: http://sip.ztm.lublin.eu/AndroidService/SchedulesService.svc
+    description: 'City service example: Lublin (ZTM) — clientCode LUBLI'
+  - url: http://sip.ztm.kielce.pl/AndroidService/SchedulesService.svc
+    description: 'City service example: Kielce (ZTM) — clientCode KIELC (trip planner enabled)'
+  - url: http://mapa.mks-mielec.pl/AndroidService/SchedulesService.svc
+    description: 'City service example: Mielec (MKS) — clientCode MIELE'
+  - url: http://rozklady.lodz.pl/myBusServices/SchedulesService.svc
+    description: 'City service example: Łódź (ZDiT) — clientCode "LODZ " (trailing space!)'
+  - url: https://shared.mybus.rg.com.pl/api/v1/config
+    description: Central config API (JSON, no auth)
+  - url: http://www.taran.com.pl/myBusOnlineCfg/ConfigurationService.svc
+    description: 'Legacy global config service (verified unreachable 2026-11-17)'
+
+tags:
+  - name: handshake
+    description: Server health and access-token issuance
+  - name: schedule
+    description: Static timetable database distribution
+  - name: departures
+    description: Real-time departure boards and single-departure tracking
+  - name: vehicles
+    description: Live vehicle positions and per-vehicle schedules
+  - name: planner
+    description: Trip planner (journey search) — only where CFG.lTripPlaner = Y
+  - name: messages
+    description: Dispatcher/traffic messages
+  - name: config
+    description: Central and legacy configuration APIs
+
+paths:
+  /PingService:
+    get:
+      tags: [handshake]
+      operationId: pingService
+      summary: Health check; issues the current access token
+      description: |
+        Must be called first, with `Age = 60 + Σord(clientCode)`. The returned integer is the
+        server token to use in the `Age` header of all other per-city calls.
+        Verified: all tested cities returned `2054` on 2026-11-17.
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/AgeBootstrap'
+      responses:
+        '200':
+          description: Current server token
+          content:
+            application/xml:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: integer
+                    example: 2054
+                    xml:
+                      name: int
+                      wrapped: false
+              example: '<?xml version="1.0" encoding="utf-8"?><int>2054</int>'
+        '400':
+          $ref: '#/components/responses/Unauthorized'
+
+  /CompareScheduleFile:
+    get:
+      tags: [schedule]
+      operationId: compareScheduleFile
+      summary: Check whether the cached schedule DB is current
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/Age'
+        - name: nIdWersja
+          in: query
+          required: true
+          schema: { type: integer }
+          description: Version id (`WERSJE.id_wersja` of the local DB)
+          example: 4597
+        - name: nGeneracja
+          in: query
+          required: true
+          schema: { type: integer }
+          description: Generation (`WERSJE.generacja` of the local DB)
+          example: 1
+      responses:
+        '200':
+          description: '`1` = local copy up to date, `0` = download GetScheduleFile'
+          content:
+            application/xml:
+              schema:
+                type: object
+                properties:
+                  value: { type: integer, enum: [0, 1], xml: { name: int, wrapped: false } }
+              example: '<?xml version="1.0" encoding="utf-8"?><int>1</int>'
+
+  /GetScheduleFile:
+    get:
+      tags: [schedule]
+      operationId: getScheduleFile
+      summary: Download the full static timetable database
+      description: |
+        Returns a gzip stream (send `Accept-Encoding: identity`) whose payload is a SQLite 3
+        database with tables WERSJE, CFG, DNI, KALENDARZ, KIERUNKI, PRZYSTANKI, ODJAZDY,
+        PUNKTY, ULICE, UWAGI. Verified: Lublin 954,726 B gzip / 5,419,008 B SQLite / 1,486 stops.
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/Age'
+      responses:
+        '200':
+          description: Gzip-compressed SQLite database
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+
+  /GetTimeTableReal:
+    get:
+      tags: [departures]
+      operationId: getTimeTableReal
+      summary: Real-time departure board for a stop
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/Age'
+        - name: nBusStopId
+          in: query
+          required: true
+          schema: { type: integer }
+          description: Stop id (PRZYSTANKI.id)
+          example: 1
+        - name: nBusStopGroupId
+          in: query
+          required: true
+          schema: { type: integer }
+          description: Stop-group id, 0 for a single stop
+          example: 0
+      responses:
+        '200':
+          description: Departure board
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/Departures'
+              example: '<?xml version="1.0" encoding="utf-8"?><Departures time="14:23" i="1"><N></N><D i="2180" di="453793_0" n="24007" t="52025" r="74" dd="P" d="DWORZEC LUBLIN" p="A" kn="" vr="201" m="2" v="3 min" vn="CKNE" iks="20261117" ip="1"/></Departures>'
+
+  /GetDepartureInfo:
+    get:
+      tags: [departures]
+      operationId: getDepartureInfo
+      summary: Single-departure detail (used for departure tracking)
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/Age'
+        - name: cDate
+          in: query
+          required: true
+          schema: { type: string, format: date }
+          description: Service date (the `dg` attribute of a GetConnections leg)
+          example: '2026-11-17'
+        - name: nBusStopId
+          in: query
+          required: true
+          schema: { type: integer }
+          example: 426
+        - name: nUqTripId
+          in: query
+          required: true
+          schema: { type: integer, format: int64 }
+          description: Unique trip id (`uti` from GetConnections, or `n` from a board departure)
+          example: 6373224
+      responses:
+        '200':
+          description: Departure detail (empty D when no data)
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/Departure'
+              example: '<?xml version="1.0" encoding="utf-8"?><D i="2846" iks="20261117" di="539835_0" n="0" t="56040" r="54" d="MALIKÓW" p="A" kn="" vr="3592" m="3" v="15:34" vn=""/>'
+
+  /GetVehicles:
+    get:
+      tags: [vehicles]
+      operationId: getVehicles
+      summary: Live vehicle positions (optionally filtered)
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/Age'
+        - name: cNbLst
+          in: query
+          schema: { type: string }
+          description: Semicolon-separated course numbers (nb)
+          example: ''
+        - name: cIdLst
+          in: query
+          schema: { type: string }
+          description: Semicolon-separated vehicle ids
+          example: ''
+        - name: cRouteLst
+          in: query
+          schema: { type: string }
+          description: Semicolon-separated route numbers
+          example: '32'
+        - name: cTrackLst
+          in: query
+          schema: { type: string }
+          description: Semicolon-separated track ids
+          example: ''
+        - name: cDirLst
+          in: query
+          schema: { type: string }
+          description: Semicolon-separated direction codes (dd/kr, e.g. T, P)
+          example: ''
+        - name: cKrsLst
+          in: query
+          schema: { type: string }
+          description: Semicolon-separated course ids (ik)
+          example: ''
+      responses:
+        '200':
+          description: Vehicle list
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/VehicleList'
+              example: '<?xml version="1.0" encoding="utf-8"?><VL><V id="890765674" nb="1858" nr="23" wt="J" kr="P" ik="1353" lp="25" dp="469" dw="473" x="22.5714" y="51.27551" px="22.5714" py="51.27551" o="31" s="1" p="13:44" op="KUPIECKA IKEA" c="GNZ" nk="1354" nnr="23" nwt="B" nkr="T" nop="FELIN UNIWERSYTET" is="0" vt="R" kwi=""/></VL>'
+
+  /GetVehicleTimeTable:
+    get:
+      tags: [vehicles]
+      operationId: getVehicleTimeTable
+      summary: Remaining stops + countdowns of one running course
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/Age'
+        - name: nIdKursu
+          in: query
+          required: true
+          schema: { type: integer }
+          description: Course id; the app passes 0
+          example: 0
+        - name: nNb
+          in: query
+          required: true
+          schema: { type: integer }
+          description: Course number (`nb` from GetVehicles)
+          example: 1858
+      responses:
+        '200':
+          description: Vehicle schedule
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/VehicleSchedules'
+              example: '<?xml version="1.0" encoding="utf-8"?><Schedules id="20261117" nr="23" type="J" o="KUPIECKA IKEA"><Stop lp="27" id="110" name="DOŻYNKOWA 01" th="" tm="&lt;1min" s="11" m="1"/><Stop lp="28" id="1092" name="IKEA 03" th="" tm="2 min" s="131" m="2"/></Schedules>'
+
+  /GetRouteVariantWithTransitPoints:
+    get:
+      tags: [vehicles]
+      operationId: getRouteVariantWithTransitPoints
+      summary: Track geometry of a route variant
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/Age'
+        - name: nIdKursu
+          in: query
+          required: true
+          schema: { type: integer }
+          description: Course id (e.g. nb of a live vehicle)
+          example: 1858
+        - name: cRoute
+          in: query
+          schema: { type: string }
+          description: Route filter (app passes empty)
+          example: ''
+        - name: cRouteVariant
+          in: query
+          schema: { type: string }
+          example: ''
+        - name: nIdPodm
+          in: query
+          schema: { type: integer }
+          description: Substitution id; the app passes -1
+          example: -1
+      responses:
+        '200':
+          description: Route variant geometry
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/RouteVariant'
+              example: '<?xml version="1.0" encoding="utf-8"?><R r="18   " t="J"><T i1="1049" i2="1046"><Pkt l="1" x="22.57718" y="51.30494"/><Pkt l="2" x="22.57718" y="51.30488"/></T></R>'
+
+  /GetConnections:
+    get:
+      tags: [planner]
+      operationId: getConnections
+      summary: Trip planner (journey search)
+      description: Only available where the city's CFG table has lTripPlaner = Y (e.g. Kielce; Lublin returns 400).
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/Age'
+        - name: nLat1
+          in: query
+          required: true
+          schema: { type: number }
+          description: Origin latitude
+          example: 50.866
+        - name: nLng1
+          in: query
+          required: true
+          schema: { type: number }
+          description: Origin longitude
+          example: 20.628
+        - name: nLat2
+          in: query
+          required: true
+          schema: { type: number }
+          example: 50.897
+        - name: nLng2
+          in: query
+          required: true
+          schema: { type: number }
+          example: 20.585
+        - name: nSearchMode
+          in: query
+          required: true
+          schema: { type: integer, enum: [0, 1] }
+          description: 0 = depart at cStartHour, 1 = arrive by cStartHour
+          example: 0
+        - name: cStartHour
+          in: query
+          required: true
+          schema: { type: string }
+          description: 'Search time HH:mm'
+          example: '15:30'
+        - name: cDate
+          in: query
+          required: true
+          schema: { type: string, format: date }
+          example: '2026-11-17'
+        - name: nMaxTrans
+          in: query
+          required: true
+          schema: { type: integer }
+          description: Maximum transfers
+          example: 2
+        - name: nMaxMinutesChangeInterval
+          in: query
+          schema: { type: integer }
+          description: Minimum transfer time in minutes (app sends 0)
+          example: 0
+        - name: cSkipRoutes
+          in: query
+          schema: { type: string }
+          description: Semicolon-separated routes to skip
+          example: ''
+        - name: cPrefVehicleFlags
+          in: query
+          schema: { type: string }
+          description: 'Semicolon-separated preferred vehicle flags (N = low floor)'
+          example: ''
+      responses:
+        '200':
+          description: Journey alternatives
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/Connections'
+        '400':
+          description: WCF request-error page (planner disabled for the city, or malformed params)
+
+  /GetDispatcherMessages:
+    get:
+      tags: [messages]
+      operationId: getDispatcherMessages
+      summary: Dispatcher/traffic messages
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/Age'
+      responses:
+        '200':
+          description: Message list (R with message children; empty when none)
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/DispatcherMessages'
+              example: '<?xml version="1.0" encoding="utf-8"?><R/>'
+
+  /cities:
+    servers:
+      - url: https://shared.mybus.rg.com.pl/api/v1/config
+    get:
+      tags: [config]
+      operationId: getCentralCities
+      summary: Central config — list of networks (JSON)
+      description: |
+        No auth, no custom headers. Used by the 2.8.13 client to detect networks served by the
+        successor app; each entry also advertises the successor's JSON API base URL (apiBaseUrl).
+        27 networks on 2026-11-17.
+      responses:
+        '200':
+          description: Network configuration list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CentralConfig'
+              example:
+                configVersion: 2
+                cities:
+                  - id: chelm
+                    dataId: chelm
+                    clientCode: CHELM
+                    name: Chełm
+                    environment: ''
+                    operator: Chełmskie Linie Autobusowe Sp. z o.o.
+                    operatorShort: CLA
+                    region: woj. lubelskie
+                    apiBaseUrl: https://rozklad.cla.net.pl/api-mybus-3
+                    lat: 51.1431
+                    lon: 23.4716
+                    mapZoom: 12
+                    certificatePins: []
+                    modules: { planner: true, vehiclesLive: true, messages: true, qr: true }
+                    cityFunctions:
+                      - { id: chelm-carrier-www, type: web-link, url: 'https://www.cla.net.pl' }
+
+  /GetMessage:
+    servers:
+      - url: http://www.taran.com.pl/myBusOnlineCfg/ConfigurationService.svc
+    get:
+      tags: [config]
+      operationId: getLegacyMessage
+      summary: Legacy global config — maintenance message for a city
+      description: 'No Age/User-Agent validation. Host was unreachable on 2026-11-17 (static analysis only).'
+      parameters:
+        - name: cityCode
+          in: query
+          required: true
+          schema: { type: string }
+          description: 5-letter clientCode
+          example: LUBLI
+      responses:
+        '200':
+          description: Server message (c = string, s = severity/show flag, m = message text)
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/LegacyMessage'
+              example: '<?xml version="1.0" encoding="utf-8"?><msg c="2026-11-17 10:00" s="1" m="Scheduled maintenance"/>'
+
+components:
+  parameters:
+    UserAgent:
+      name: User-Agent
+      in: header
+      required: true
+      schema:
+        type: string
+        enum: [myBusOnline]
+      description: Mandatory fixed user-agent; anything else (or missing) yields 400.
+    AgeBootstrap:
+      name: Age
+      in: header
+      required: true
+      schema:
+        type: integer
+        example: 436
+      description: 'PingService bootstrap value: 60 + Σord(clientCode). Example for LUBLI: 60+376=436.'
+    Age:
+      name: Age
+      in: header
+      required: true
+      schema:
+        type: integer
+        example: 2430
+      description: 'Server token from the last PingService + Σord(clientCode). Example for LUBLI on 2026-11-17: 2054+376=2430.'
+
+  responses:
+    Unauthorized:
+      description: Handshake violated (missing/wrong Age or User-Agent)
+      content:
+        application/xml:
+          schema:
+            type: object
+            properties:
+              value:
+                type: string
+                example: Unauthorized access
+                xml: { name: string, wrapped: false }
+          example: '<?xml version="1.0" encoding="utf-8"?><string xmlns="http://schemas.microsoft.com/2003/10/Serialization/">Unauthorized access</string>'
+
+  schemas:
+    Departures:
+      type: object
+      xml: { name: Departures }
+      required: [time]
+      properties:
+        time:
+          type: string
+          description: Server time HH:mm
+          xml: { attribute: true }
+          example: '14:23'
+        i:
+          type: integer
+          description: Flag (observed 1; successor-app field)
+          xml: { attribute: true }
+        N:
+          type: string
+          description: Notice text shown when no departures are available
+          xml: { name: N, wrapped: false }
+        D:
+          type: array
+          xml: { wrapped: false }
+          items:
+            $ref: '#/components/schemas/Departure'
+
+    Departure:
+      type: object
+      xml: { name: D }
+      properties:
+        i:
+          type: integer
+          description: Departure/course-instance id
+          xml: { attribute: true }
+        di:
+          type: string
+          description: Departure-instance id (successor app)
+          xml: { attribute: true }
+        n:
+          type: integer
+          description: Unique trip id (nUqTripId); 0 = not live-tracked
+          xml: { attribute: true }
+        t:
+          type: integer
+          description: Scheduled departure, seconds since midnight
+          xml: { attribute: true }
+          example: 52025
+        r:
+          type: string
+          description: Route number
+          xml: { attribute: true }
+          example: '74'
+        d:
+          type: string
+          description: Direction (destination)
+          xml: { attribute: true }
+          example: DWORZEC LUBLIN
+        dd:
+          type: string
+          description: Direction-variant code (T/P); cDirLst filter value
+          xml: { attribute: true }
+        p:
+          type: string
+          description: Vehicle type (A bus, R trolleybus, T tram)
+          xml: { attribute: true }
+          example: A
+        kn:
+          type: string
+          description: Course/block label (often empty)
+          xml: { attribute: true }
+        vr:
+          type: integer
+          description: Real-time seconds until departure (negative = departed)
+          xml: { attribute: true }
+        m:
+          type: integer
+          description: 'Status: 1 red (imminent), 2 green (live), 3 black (scheduled only)'
+          xml: { attribute: true }
+        v:
+          type: string
+          description: Display time ("<1min", "3 min", "15:22")
+          xml: { attribute: true }
+          example: 3 min
+        vn:
+          type: string
+          description: 'Amenity flags: N low floor, K AC, B ticket machine, Z card payment, R bicycle, E electric'
+          xml: { attribute: true }
+          example: CKNE
+        iks:
+          type: string
+          description: Course-instance key (date YYYYMMDD in some cities)
+          xml: { attribute: true }
+        ip:
+          type: integer
+          description: Flag (successor app)
+          xml: { attribute: true }
+
+    VehicleList:
+      type: object
+      xml: { name: VL }
+      properties:
+        V:
+          type: array
+          xml: { wrapped: false }
+          items:
+            $ref: '#/components/schemas/Vehicle'
+
+    Vehicle:
+      type: object
+      xml: { name: V }
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Vehicle id
+          xml: { attribute: true }
+          example: 890765674
+        nb:
+          type: integer
+          description: Course number (nNb for GetVehicleTimeTable)
+          xml: { attribute: true }
+          example: 1858
+        nr:
+          type: string
+          description: Current route number
+          xml: { attribute: true }
+          example: '23'
+        wt:
+          type: string
+          description: Day-type/course code (J, C, A) — legacy
+          xml: { attribute: true }
+        kr:
+          type: string
+          description: Direction-variant code (P/T)
+          xml: { attribute: true }
+        ik:
+          type: integer
+          description: Course id (internal)
+          xml: { attribute: true }
+        lp:
+          type: integer
+          description: Progress ordinal — legacy
+          xml: { attribute: true }
+        dp:
+          type: integer
+          description: Progress metric — legacy
+          xml: { attribute: true }
+        dw:
+          type: integer
+          description: Progress metric — legacy
+          xml: { attribute: true }
+        x:
+          type: number
+          description: Current longitude
+          xml: { attribute: true }
+          example: 22.5714
+        y:
+          type: number
+          description: Current latitude
+          xml: { attribute: true }
+          example: 51.27551
+        px:
+          type: number
+          description: Auxiliary/predicted longitude (heading)
+          xml: { attribute: true }
+        py:
+          type: number
+          description: Auxiliary/predicted latitude (heading)
+          xml: { attribute: true }
+        o:
+          type: integer
+          description: Deviation from schedule, seconds (negative = delayed)
+          xml: { attribute: true }
+          example: 31
+        s:
+          type: integer
+          description: Status flag — legacy
+          xml: { attribute: true }
+        p:
+          type: string
+          description: Time HH:mm — legacy
+          xml: { attribute: true }
+        op:
+          type: string
+          description: Direction/destination label
+          xml: { attribute: true }
+          example: KUPIECKA IKEA
+        c:
+          type: string
+          description: Amenity flags (same encoding as Departure.vn)
+          xml: { attribute: true }
+          example: GNZ
+        nk:
+          type: integer
+          description: Next course id (0 = none); delay data shown only when non-zero
+          xml: { attribute: true }
+        nnr:
+          type: string
+          description: Next route number
+          xml: { attribute: true }
+        nwt:
+          type: string
+          description: Next day-type code
+          xml: { attribute: true }
+        nkr:
+          type: string
+          description: Next direction-variant code
+          xml: { attribute: true }
+        nop:
+          type: string
+          description: Next direction/destination
+          xml: { attribute: true }
+        is:
+          type: integer
+          description: Flag — legacy
+          xml: { attribute: true }
+        vt:
+          type: string
+          description: Vehicle type (A bus, R trolleybus, T tram)
+          xml: { attribute: true }
+          example: R
+        kwi:
+          type: string
+          description: Service note label
+          xml: { attribute: true }
+        nap:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Vehicle occupancy level percent (absent when unknown)
+          xml: { attribute: true }
+
+    VehicleSchedules:
+      type: object
+      xml: { name: Schedules }
+      properties:
+        id:
+          type: string
+          description: Course-instance date YYYYMMDD
+          xml: { attribute: true }
+          example: '20261117'
+        nr:
+          type: string
+          description: Route number
+          xml: { attribute: true }
+          example: '23'
+        type:
+          type: string
+          description: Day-type code
+          xml: { attribute: true }
+          example: J
+        o:
+          type: string
+          description: Direction/destination
+          xml: { attribute: true }
+          example: KUPIECKA IKEA
+        Stop:
+          type: array
+          xml: { wrapped: false }
+          items:
+            type: object
+            xml: { name: Stop }
+            properties:
+              lp:
+                type: integer
+                description: Stop ordinal
+                xml: { attribute: true }
+              id:
+                type: integer
+                description: Stop id
+                xml: { attribute: true }
+              name:
+                type: string
+                description: Stop name
+                xml: { attribute: true }
+                example: IKEA 03
+              th:
+                type: string
+                description: Theoretical (scheduled) time; empty when live
+                xml: { attribute: true }
+              tm:
+                type: string
+                description: Time-to-arrival display text
+                xml: { attribute: true }
+                example: 2 min
+              s:
+                type: integer
+                description: Seconds until arrival
+                xml: { attribute: true }
+                example: 131
+              m:
+                type: integer
+                description: Status (1 red, 2 green, other black)
+                xml: { attribute: true }
+
+    RouteVariant:
+      type: object
+      xml: { name: R }
+      properties:
+        r:
+          type: string
+          description: Route number
+          xml: { attribute: true }
+        t:
+          type: string
+          description: Day-type code
+          xml: { attribute: true }
+        T:
+          type: array
+          description: Track segments between stops
+          xml: { wrapped: false }
+          items:
+            type: object
+            xml: { name: T }
+            properties:
+              i1:
+                type: integer
+                description: From stop id
+                xml: { attribute: true }
+              i2:
+                type: integer
+                description: To stop id
+                xml: { attribute: true }
+              Pkt:
+                type: array
+                xml: { wrapped: false }
+                items:
+                  type: object
+                  xml: { name: Pkt }
+                  properties:
+                    l:
+                      type: integer
+                      description: Point ordinal
+                      xml: { attribute: true }
+                    x:
+                      type: number
+                      description: Longitude
+                      xml: { attribute: true }
+                    y:
+                      type: number
+                      description: Latitude
+                      xml: { attribute: true }
+
+    Connections:
+      type: object
+      xml: { name: CC }
+      properties:
+        C:
+          type: array
+          description: Journey alternatives
+          xml: { wrapped: false }
+          items:
+            type: object
+            xml: { name: C }
+            properties:
+              gs:
+                type: integer
+                description: Journey start, seconds since midnight
+                xml: { attribute: true }
+              ge:
+                type: integer
+                description: Journey end, seconds since midnight
+                xml: { attribute: true }
+              js:
+                type: integer
+                description: First transit time (successor app)
+                xml: { attribute: true }
+              je:
+                type: integer
+                description: Last transit time (successor app)
+                xml: { attribute: true }
+              jdr:
+                type: integer
+                description: Total duration, seconds
+                xml: { attribute: true }
+                example: 2340
+              tdr:
+                type: integer
+                description: In-vehicle duration, seconds
+                xml: { attribute: true }
+                example: 1560
+              wdr:
+                type: integer
+                description: Walking duration, seconds
+                xml: { attribute: true }
+                example: 240
+              tln:
+                type: integer
+                description: Transit distance, meters (inferred)
+                xml: { attribute: true }
+              wln:
+                type: integer
+                description: Walking distance, meters (inferred)
+                xml: { attribute: true }
+              ss:
+                type: integer
+                description: Slack time, seconds (inferred)
+                xml: { attribute: true }
+              G:
+                type: array
+                description: Leg points (consecutive points with same uti form one transit leg)
+                xml: { wrapped: false }
+                items:
+                  type: object
+                  xml: { name: G }
+                  properties:
+                    i:
+                      type: integer
+                      description: Stop id (0 = free point)
+                      xml: { attribute: true }
+                    n:
+                      type: string
+                      description: Stop name
+                      xml: { attribute: true }
+                    g:
+                      type: integer
+                      description: 'Time, seconds since midnight (+86400·n for after-midnight legs)'
+                      xml: { attribute: true }
+                    dg:
+                      type: string
+                      description: Service date yyyy-MM-dd (cDate for GetDepartureInfo)
+                      xml: { attribute: true }
+                    o:
+                      type: integer
+                      description: Ordinal/flag (observed 0)
+                      xml: { attribute: true }
+                    x:
+                      type: number
+                      description: Longitude
+                      xml: { attribute: true }
+                    y:
+                      type: number
+                      description: Latitude
+                      xml: { attribute: true }
+                    w:
+                      type: integer
+                      description: 1 = walking leg
+                      xml: { attribute: true }
+                    cw:
+                      type: integer
+                      description: Wait/walk duration at this point, seconds
+                      xml: { attribute: true }
+                    t:
+                      type: integer
+                      description: 1 = transit point, 0 = walk point
+                      xml: { attribute: true }
+                    r:
+                      type: string
+                      description: Route number (empty on walking legs)
+                      xml: { attribute: true }
+                    v:
+                      type: string
+                      description: Vehicle type
+                      xml: { attribute: true }
+                    uti:
+                      type: integer
+                      format: int64
+                      description: Unique trip id (nUqTripId)
+                      xml: { attribute: true }
+                    vn:
+                      type: string
+                      description: Vehicle label
+                      xml: { attribute: true }
+                    dem:
+                      type: integer
+                      description: 1 = request stop
+                      xml: { attribute: true }
+                    PP:
+                      type: object
+                      description: Point-to-point geometry to the next leg point
+                      xml: { name: PP }
+                      properties:
+                        P:
+                          type: array
+                          xml: { wrapped: false }
+                          items:
+                            type: object
+                            xml: { name: P }
+                            properties:
+                              x:
+                                type: number
+                                xml: { attribute: true }
+                              y:
+                                type: number
+                                xml: { attribute: true }
+
+    DispatcherMessages:
+      type: object
+      xml: { name: R }
+      properties:
+        M:
+          type: array
+          description: Messages (empty element R when none)
+          xml: { wrapped: false }
+          items:
+            type: object
+            xml: { name: M }
+            properties:
+              i:
+                type: integer
+                description: Message id
+                xml: { attribute: true }
+              o:
+                type: integer
+                description: Ordinal
+                xml: { attribute: true }
+              t:
+                type: string
+                description: Title
+                xml: { attribute: true }
+              m:
+                type: string
+                description: Body
+                xml: { attribute: true }
+
+    LegacyMessage:
+      type: object
+      xml: { name: msg }
+      properties:
+        c:
+          type: string
+          description: Timestamp/context string
+          xml: { attribute: true }
+        s:
+          type: integer
+          description: Show flag (1 = display m)
+          xml: { attribute: true }
+        m:
+          type: string
+          description: Message text
+          xml: { attribute: true }
+
+    CentralConfig:
+      type: object
+      required: [configVersion, cities]
+      properties:
+        configVersion:
+          type: integer
+          example: 2
+        cities:
+          type: array
+          items:
+            type: object
+            required: [id, clientCode, name]
+            properties:
+              id: { type: string, example: chelm }
+              dataId: { type: string, example: chelm }
+              clientCode: { type: string, example: CHELM, description: 5-letter code used by the 2.x services and the Age checksum }
+              name: { type: string, example: Chełm }
+              environment: { type: string, example: '' }
+              operator: { type: string, example: 'Chełmskie Linie Autobusowe Sp. z o.o.' }
+              operatorShort: { type: string, example: CLA }
+              region: { type: string, example: woj. lubelskie }
+              regionI18n:
+                type: object
+                additionalProperties: { type: string }
+              apiBaseUrl: { type: string, example: 'https://rozklad.cla.net.pl/api-mybus-3', description: Successor "myBus 3" JSON API base URL }
+              lat: { type: number, example: 51.1431 }
+              lon: { type: number, example: 23.4716 }
+              mapZoom: { type: integer, example: 12 }
+              certificatePins:
+                type: array
+                items: { type: string }
+              modules:
+                type: object
+                properties:
+                  planner: { type: boolean }
+                  vehiclesLive: { type: boolean }
+                  messages: { type: boolean }
+                  qr: { type: boolean }
+              cityFunctions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string, example: chelm-carrier-www }
+                    type: { type: string, example: web-link }
+                    url: { type: string, format: uri, example: 'https://www.cla.net.pl' }
