@@ -1,0 +1,1373 @@
+openapi: 3.1.0
+info:
+  title: myBus 3.0 — nieoficjalna dokumentacja API
+  version: 3.0.11
+  description: |
+    Nieoficjalna, niezależna dokumentacja API aplikacji myBus 3.0 (Android, pakiet
+    pl.rg.mybus, wydanie 3.0.11). Odtworzona metodami inżynierii wstecznej
+    (dekompilacja własnej kopii aplikacji) w celu interoperacyjności, na podstawie
+    art. 6 dyrektywy 2009/24/WE.
+
+    System jest dwuwarstwowy:
+    1. **Backoffice współdzielony** (`https://shared.mybus.rg.com.pl`) — 4 endpointy
+       publiczne `api/v1/config/*`, dostępne bez uwierzytelnienia (zweryfikowane
+       2026-11-17). Zwracają konfigurację 28 miast, wersje aplikacji, komunikaty
+       i changelog.
+    2. **API danych miasta** (bazowy URL per miasto, patrz servers poniżej) —
+       29 endpointów `api/v3/*`: przystanki, odjazdy, rozkłady, pojazdy na żywo,
+       planer podróży (OpenTripPlanner 2), geokodowanie, strefy, rowery miejskie.
+       Endpointy są chronione poświadczeniem aplikacji (Firebase App Check,
+       nagłówek `X-Firebase-AppCheck`) — żądanie bez ważnego poświadczenia
+       zwraca HTTP 401 z body zwrotnym UnauthorizedError.
+
+    Wszystkie metody są GET; format odpowiedzi: JSON (UTF-8). Klient aplikacji
+    wysyła nagłówki `Accept-Language` oraz opcjonalny `X-Api-Key` (wyłącznie
+    buildy wewnętrzne backoffice).
+  contact:
+    name: Dokumentacja niezależna (nie jest to oficjalne API R&G)
+  license:
+    name: Dokumentacja interoperacyjnościowa
+externalDocs:
+  description: Pełna dokumentacja opisowa (DOCX)
+  url: https://example.org/mybus30-doc
+
+servers:
+  - url: 'https://shared.mybus.rg.com.pl'
+    description: Backoffice współdzielony — publiczny, bez uwierzytelnienia
+  - url: 'https://appmybus3.zdtm.lublin.eu'
+    description: Lublin (ZDiTM) — API miasta
+  - url: 'https://rozklad.cla.net.pl/api-mybus-3'
+    description: Chełm (CLA) — API miasta
+  - url: 'https://rozklady.lodz.pl/api-mybus-3'
+    description: Łódź (MPK) — API miasta
+  - url: 'https://sip.ztm.kielce.pl/api-mybus-3'
+    description: Kielce (ZTM) — API miasta
+  - url: '{apiBaseUrl}'
+    description: Dowolne miasto — apiBaseUrl z GET /api/v1/config/cities
+    variables:
+      apiBaseUrl:
+        default: https://appmybus3.zdtm.lublin.eu
+        description: Bazowy URL miasta z konfiguracji (28 miast, patrz dokument DOCX, tab. 8.1)
+
+tags:
+  - name: Konfiguracja (publiczne)
+    description: Endpointy backoffice'u współdzielonego, dostępne bez poświadczenia
+  - name: Przystanki i węzły
+  - name: Odjazdy
+  - name: Rozkłady jazdy
+  - name: Linie i kursy
+  - name: Pojazdy na żywo
+  - name: Planer podróży
+  - name: Pozostałe dane miasta
+
+security:
+  - AppCheck: []
+
+paths:
+  # ─────────────────────────── PUBLICZNE V1 ───────────────────────────
+  /api/v1/config/cities:
+    get:
+      tags: [Konfiguracja (publiczne)]
+      summary: Lista obsługiwanych miast
+      description: |
+        Pełna konfiguracja miast (28 wpisów): identyfikatory, przewoźnicy,
+        współrzędne startowe mapy, bazowe URL-e API, przypięcia certyfikatów,
+        aktywne moduły. Publiczny — zweryfikowany 2026-11-17 bez żadnego
+        nagłówka uwierzytelniającego. Odpowiedź zawiera ETag i cache-control
+        public, max-age=300.
+      security: []
+      parameters:
+        - name: includeLocal
+          in: query
+          schema: { type: boolean }
+          description: 'Tylko dla buildów wewnętrznych (wymaga X-Api-Key); dodaje wpisy środowisk lokalnych (IP).'
+        - name: includeDevOnly
+          in: query
+          schema: { type: boolean }
+          description: 'Tylko dla buildów wewnętrznych (wymaga X-Api-Key); dodaje miasta wdrożeniowe.'
+      responses:
+        '200':
+          description: Plik konfiguracji miast
+          headers:
+            ETag:
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string, example: 'public, max-age=300, must-revalidate' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CityConfigFile' }
+  /api/v1/config/app:
+    get:
+      tags: [Konfiguracja (publiczne)]
+      summary: Wersje aplikacji i wymuszone aktualizacje
+      security: []
+      parameters:
+        - name: platform
+          in: query
+          required: true
+          schema: { type: string, enum: [android, ios], default: android }
+        - name: version
+          in: query
+          required: true
+          schema: { type: string, example: '3.0.11' }
+        - name: If-None-Match
+          in: header
+          schema: { type: string }
+          description: Obsługa ETag — odpowiedź 304 przy braku zmian.
+      responses:
+        '200':
+          description: Informacje o wersjach
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppVersionInfo' }
+        '304': { description: Bez zmian (ETag) }
+  /api/v1/config/notices:
+    get:
+      tags: [Konfiguracja (publiczne)]
+      summary: Komunikaty serwisowe (globalne)
+      security: []
+      parameters:
+        - name: city
+          in: query
+          schema: { type: string, example: lublin }
+          description: Identyfikator miasta (opcjonalny filtr).
+        - name: platform
+          in: query
+          required: true
+          schema: { type: string, default: android }
+        - name: version
+          in: query
+          required: true
+          schema: { type: string, example: '3.0.11' }
+        - name: If-None-Match
+          in: header
+          schema: { type: string }
+      responses:
+        '200':
+          description: Lista komunikatów
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceNotices' }
+        '304': { description: Bez zmian (ETag) }
+  /api/v1/config/changelog:
+    get:
+      tags: [Konfiguracja (publiczne)]
+      summary: Historia wydań aplikacji
+      security: []
+      parameters:
+        - name: platform
+          in: query
+          required: true
+          schema: { type: string, default: android }
+        - name: lang
+          in: query
+          schema: { type: string, example: pl }
+          description: 'Kod języka (np. pl, en).'
+      responses:
+        '200':
+          description: Lista wydań
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Changelog' }
+
+  # ─────────────────────────── PRZYSTANKI / WĘZŁY ───────────────────────────
+  /api/v3/stops:
+    get:
+      tags: [Przystanki i węzły]
+      summary: Wyszukiwanie przystanków
+      parameters:
+        - { name: ids, in: query, schema: { type: string }, description: 'Lista ID przystanków rozdzielona przecinkami.' }
+        - { name: query, in: query, schema: { type: string }, description: 'Fraza wyszukiwania (nazwa przystanku).' }
+        - { name: lat, in: query, schema: { type: number, format: double } }
+        - { name: lon, in: query, schema: { type: number, format: double } }
+        - { name: radius, in: query, schema: { type: integer }, description: 'Promień [m] wokół lat/lon.' }
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: offset, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Lista przystanków
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StopsResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/stops/resolve:
+    get:
+      tags: [Przystanki i węzły]
+      summary: Rozpoznanie przystanku po kodzie (np. z kodu QR)
+      parameters:
+        - { name: code, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Dopasowany przystanek + kandydaci
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StopResolve' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/nodes:
+    get:
+      tags: [Przystanki i węzły]
+      summary: Lista węzłów przystankowych (słupki pogrupowane)
+      parameters:
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: offset, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Lista węzłów
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Node' } }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/nodes/{nodeId}:
+    get:
+      tags: [Przystanki i węzły]
+      summary: Szczegóły węzła ze słupkami i najbliższymi odjazdami
+      parameters:
+        - { name: nodeId, in: path, required: true, schema: { type: string } }
+        - { name: departuresPerRoute, in: query, schema: { type: integer }, description: 'Ile najbliższych odjazdów na kierunek linii.' }
+      responses:
+        '200':
+          description: Szczegóły węzła
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeDetail' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/stop-groups:
+    get:
+      tags: [Przystanki i węzły]
+      summary: Lista grup przystankowych
+      parameters:
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: offset, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Lista grup
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/StopGroup' } }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/stop-groups/{stopCode}:
+    get:
+      tags: [Przystanki i węzły]
+      summary: Szczegóły grupy przystankowej (slupki + odjazdy per linia)
+      parameters:
+        - { name: stopCode, in: path, required: true, schema: { type: string } }
+        - { name: departuresPerRoute, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Szczegóły grupy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StopGroupDetail' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────── ODJAZDY ───────────────────────────
+  /api/v3/departures/upcoming:
+    get:
+      tags: [Odjazdy]
+      summary: Najbliższe odjazdy dla wielu przystanków
+      parameters:
+        - { name: stopIds, in: query, required: true, schema: { type: string }, description: 'Lista ID przystanków rozdzielona przecinkami.' }
+        - { name: limit, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: Odjazdy pogrupowane per przystanek
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpcomingDepartures' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/stops/{stopId}/departures/upcoming:
+    get:
+      tags: [Odjazdy]
+      summary: Najbliższe odjazdy z przystanku
+      parameters:
+        - { name: stopId, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: Odjazdy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpcomingDepartures' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/nodes/{nodeId}/departures/upcoming:
+    get:
+      tags: [Odjazdy]
+      summary: Najbliższe odjazdy z węzła
+      parameters:
+        - { name: nodeId, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: Odjazdy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpcomingDepartures' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/vehicles/{sideNumber}/departures/upcoming:
+    get:
+      tags: [Odjazdy]
+      summary: Najbliższe odjazdy pojazdu (wg numeru bocznego)
+      parameters:
+        - { name: sideNumber, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Odjazdy pojazdu
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VehicleDepartures' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────── ROZKŁADY ───────────────────────────
+  /api/v3/stops/{stopId}/timetable:
+    get:
+      tags: [Rozkłady jazdy]
+      summary: Rozkład jazdy przystanku (godziny i minuty)
+      parameters:
+        - { name: stopId, in: path, required: true, schema: { type: string } }
+        - { name: date, in: query, schema: { type: string, format: date, example: '2026-11-17' } }
+        - { name: dayType, in: query, schema: { type: string }, description: 'Symbol typu dnia (np. P, S, N) — zamiast date.' }
+        - { name: validOn, in: query, schema: { type: string, format: date } }
+        - { name: routeNumber, in: query, schema: { type: string }, description: 'Filtr jednej linii.' }
+        - { name: includeCancelled, in: query, schema: { type: boolean, default: false } }
+      responses:
+        '200':
+          description: Rozkład jazdy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Timetable' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/stops/{stopId}/timetable/plan:
+    get:
+      tags: [Rozkłady jazdy]
+      summary: Układ rozkładu (linie, typy dni) — wersja do druku
+      parameters:
+        - { name: stopId, in: path, required: true, schema: { type: string } }
+        - { name: validOn, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: Plan rozkładu
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TimetablePlan' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────── LINIE / KURSY ───────────────────────────
+  /api/v3/routes:
+    get:
+      tags: [Linie i kursy]
+      summary: Lista linii
+      parameters:
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: offset, in: query, schema: { type: integer } }
+        - { name: numbers, in: query, schema: { type: string }, description: 'Numery linii rozdzielone przecinkami.' }
+      responses:
+        '200':
+          description: Linie z metadanymi typów
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutesResponse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/routes/{routeId}/patterns:
+    get:
+      tags: [Linie i kursy]
+      summary: Warianty trasy linii
+      parameters:
+        - { name: routeId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Lista wariantów
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Pattern' } }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/routes/{routeId}/graph:
+    get:
+      tags: [Linie i kursy]
+      summary: Graf linii (oddziały, gałęzie, kręgosłup)
+      description: Struktura kierunków, gałęzi (branches) i wspólnego kręgosłupa linii; z geometrią per wariant.
+      parameters:
+        - { name: routeId, in: path, required: true, schema: { type: string } }
+        - { name: serviceDate, in: query, schema: { type: string, format: date } }
+        - { name: includeDetours, in: query, schema: { type: boolean } }
+      responses:
+        '200':
+          description: Graf linii
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteGraph' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/patterns/{patternId}:
+    get:
+      tags: [Linie i kursy]
+      summary: Szczegóły wariantu trasy (przystanki + geometria)
+      parameters:
+        - { name: patternId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Wariant trasy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pattern' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/trips/{tripId}:
+    get:
+      tags: [Linie i kursy]
+      summary: Szczegóły kursu (odjazdy per przystanek + pojazd)
+      parameters:
+        - { name: tripId, in: path, required: true, schema: { type: string } }
+        - { name: serviceDate, in: query, schema: { type: string, format: date } }
+        - { name: validOn, in: query, schema: { type: string, format: date } }
+        - { name: includeGeometry, in: query, schema: { type: boolean, default: true } }
+      responses:
+        '200':
+          description: Szczegóły kursu
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TripDetail' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────── POJAZDY ───────────────────────────
+  /api/v3/vehicles:
+    get:
+      tags: [Pojazdy na żywo]
+      summary: Pozycje pojazdów na żywo
+      description: |
+        Aplikacja pobiera pełną listę (limit=2000) i filtruje po stronie klienta.
+        Parametry filtrów serwerowych wg interfejsu Retrofit.
+      parameters:
+        - { name: routeIds, in: query, schema: { type: string }, description: 'ID linii rozdzielone przecinkami.' }
+        - { name: routeNumbers, in: query, schema: { type: string }, description: 'Numery linii rozdzielone przecinkami.' }
+        - { name: directions, in: query, schema: { type: string } }
+        - { name: sideNumbers, in: query, schema: { type: string }, description: 'Numery boczne pojazdów rozdzielone przecinkami.' }
+        - { name: tripIds, in: query, schema: { type: string } }
+        - { name: transports, in: query, schema: { type: string }, description: 'Typy transportu rozdzielone przecinkami (np. BUS, TRAM).' }
+        - { name: bbox, in: query, schema: { type: string }, description: 'Ograniczenie geograficzne (format bbox).' }
+        - { name: limit, in: query, schema: { type: integer, example: 2000 } }
+        - { name: offset, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Pojazdy na żywo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Vehicles' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────── PLANER ───────────────────────────
+  /api/v3/plan/options:
+    get:
+      tags: [Planer podróży]
+      summary: Opcje planera (tryby, sortowanie, limity przesiadek)
+      responses:
+        '200':
+          description: Opcje
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanOptions' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/plan:
+    get:
+      tags: [Planer podróży]
+      summary: Planowanie podróży (OpenTripPlanner 2)
+      description: |
+        Odpowiedź ma format OpenTripPlanner 2 (plan/itineraries). ID zasobów
+        OTP mają prefiks agencji (np. `AG:123`); aplikacja obcina prefiks przed
+        użyciem w pozostałych endpointach.
+      parameters:
+        - { name: fromPlace, in: query, required: true, schema: { type: string }, example: '51.2469,22.5699' }
+        - { name: toPlace, in: query, required: true, schema: { type: string }, example: '51.1321,22.5484' }
+        - { name: date, in: query, required: true, schema: { type: string, format: date } }
+        - { name: time, in: query, required: true, schema: { type: string, example: '12:30' } }
+        - { name: arriveBy, in: query, schema: { type: string, enum: ['true', 'false'], default: 'false' } }
+        - { name: maxTransfers, in: query, schema: { type: string, example: '4' }, description: '0–4 (klamra aplikacji).' }
+        - { name: transferMode, in: query, schema: { type: string, enum: ['0', '1'] } }
+        - { name: mode, in: query, schema: { type: string, example: 'TRANSIT,WALK' }, description: 'Np. TRANSIT,WALK / BICYCLE_RENT,TRANSIT.' }
+        - { name: sortingMode, in: query, schema: { type: string, example: '0' }, description: '0=arrivalTime, 1=transfers, 2=duration (wg opcji planera).' }
+        - { name: locale, in: query, schema: { type: string, example: pl } }
+        - { name: showIntermediateStops, in: query, schema: { type: string, enum: ['true', 'false'], default: 'true' } }
+      responses:
+        '200':
+          description: Warianty podróży (itineraries)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  itineraries:
+                    type: array
+                    items: { $ref: '#/components/schemas/OtpItinerary' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/itinerary/live:
+    get:
+      tags: [Planer podróży]
+      summary: Status na żywo wariantu podróży (per nogi)
+      parameters:
+        - { name: legs, in: query, required: true, schema: { type: string }, description: 'Zakodowana lista nóg podróży z odpowiedzi /api/v3/plan (identyfikatory kursów i przystanków wsiadu/wysiadu).' }
+      responses:
+        '200':
+          description: Status nóg podróży
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryLive' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────── POZOSTAŁE ───────────────────────────
+  /api/v3/messages:
+    get:
+      tags: [Pozostałe dane miasta]
+      summary: Komunikaty przewoźnika
+      responses:
+        '200':
+          description: Lista komunikatów
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Message' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/calendar:
+    get:
+      tags: [Pozostałe dane miasta]
+      summary: Kalendarz typów dni i zmian rozkładów
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: days, in: query, schema: { type: integer, example: 7 } }
+      responses:
+        '200':
+          description: Dni kalendarzowe
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CalendarDay' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/summary:
+    get:
+      tags: [Pozostałe dane miasta]
+      summary: Podsumowanie ekranu głównego
+      parameters:
+        - { name: lat, in: query, schema: { type: number, format: double } }
+        - { name: lon, in: query, schema: { type: number, format: double } }
+        - { name: radius, in: query, schema: { type: integer } }
+        - { name: stopIds, in: query, schema: { type: string }, description: 'ID przystanków ulubionych rozdzielone przecinkami.' }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Podsumowanie
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Summary' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/zones:
+    get:
+      tags: [Pozostałe dane miasta]
+      summary: Strefy taryfowe (poligony)
+      responses:
+        '200':
+          description: Strefy
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Zone' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/bike-share:
+    get:
+      tags: [Pozostałe dane miasta]
+      summary: Stacje rowerów miejskich
+      responses:
+        '200':
+          description: Stacje
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BikeShare' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/bike-share/areas:
+    get:
+      tags: [Pozostałe dane miasta]
+      summary: Obszary rowerów miejskich
+      responses:
+        '200':
+          description: Obszary
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/BikeShareArea' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/geocode/search:
+    get:
+      tags: [Pozostałe dane miasta]
+      summary: Geokodowanie adresów + przystanki
+      parameters:
+        - { name: query, in: query, required: true, schema: { type: string } }
+        - { name: maxResultsFromGeocoder, in: query, schema: { type: integer } }
+        - { name: maxBusStopResults, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Wyniki
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/GeocodeResult' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v3/geocode/reverse:
+    get:
+      tags: [Pozostałe dane miasta]
+      summary: Geokodowanie odwrotne + najbliższe przystanki
+      parameters:
+        - { name: lat, in: query, required: true, schema: { type: number, format: double } }
+        - { name: lon, in: query, required: true, schema: { type: number, format: double } }
+        - { name: maxBusStopResults, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Adres + najbliższe przystanki
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GeocodeReverse' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    AppCheck:
+      type: apiKey
+      in: header
+      name: X-Firebase-AppCheck
+      description: |
+        Poświadczenie aplikacji (Firebase App Check). Aplikacja dołącza token
+        gdy jest dostępny; przy 401 ponawia żądanie ze świeżym tokenem.
+        Tokeny są wystawiane przez Firebase i związane z atestacją urządzenia —
+        dokumentacja nie obejmuje sposobu ich uzyskania.
+
+  responses:
+    Unauthorized:
+      description: Żądanie wymaga poświadczenia aplikacji
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/UnauthorizedError' }
+
+  schemas:
+    UnauthorizedError:
+      type: object
+      properties:
+        code: { type: string, example: unauthorized }
+        title: { type: string, example: Brak uprawnień }
+        description: { type: string, example: To żądanie wymaga poświadczenia aplikacji. }
+
+    CityConfigFile:
+      type: object
+      properties:
+        configVersion: { type: integer, example: 2 }
+        cities:
+          type: array
+          items: { $ref: '#/components/schemas/CityConfig' }
+    CityConfig:
+      type: object
+      properties:
+        id: { type: string, example: lublin }
+        dataId: { type: string, example: lublin }
+        clientCode: { type: string, example: LUBLIN }
+        name: { type: string, example: Lublin }
+        operator: { type: string, example: Zarząd Transportu Miejskiego w Lublinie }
+        operatorShort: { type: string, example: ZDiTM }
+        region: { type: string, example: woj. lubelskie }
+        regionI18n: { type: object, additionalProperties: { type: string } }
+        environment: { type: string, example: '' }
+        apiBaseUrl: { type: string, example: 'https://appmybus3.zdtm.lublin.eu' }
+        certificatePins: { type: array, items: { type: string } }
+        allowInsecureTls: { type: boolean }
+        enabled: { type: boolean }
+        devOnly: { type: boolean }
+        lat: { type: number, format: double, example: 51.2469 }
+        lon: { type: number, format: double, example: 22.5699 }
+        mapZoom: { type: integer, example: 12 }
+        modules:
+          type: object
+          properties:
+            planner: { type: boolean }
+            vehiclesLive: { type: boolean }
+            messages: { type: boolean }
+            qr: { type: boolean }
+        cityFunctions:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              type: { type: string, example: web-link }
+              url: { type: string, format: uri }
+        lineTypes: { type: array, items: { type: string } }
+
+    AppVersionInfo:
+      type: object
+      properties:
+        generatedAt: { type: string, example: '2026-11-17T14:41:41+01:00' }
+        platform: { type: string, example: android }
+        app:
+          type: object
+          properties:
+            minVersion: { type: [string, 'null'], example: '3.0.0' }
+            latestVersion: { type: string, example: '3.0.11' }
+            storeUrl: { type: string, format: uri }
+            message: { type: [string, 'null'] }
+        updateAvailable: { type: boolean }
+        updateRequired: { type: boolean }
+    ServiceNotices:
+      type: object
+      properties:
+        generatedAt: { type: string }
+        notices:
+          type: array
+          items:
+            type: object
+    Changelog:
+      type: object
+      properties:
+        generatedAt: { type: string }
+        platform: { type: string }
+        lang: { type: string }
+        releases:
+          type: array
+          items:
+            type: object
+
+    Stop:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        stopCode: { type: string }
+        stopSymbol: { type: string }
+        groupSymbol: { type: string }
+        poleNumber: { type: integer }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+        streetName: { type: string }
+        spokenName: { type: string }
+        zone: { type: string }
+        remarks: { type: string }
+        onDemand: { type: boolean }
+        distanceMeters: { type: integer }
+    StopsResponse:
+      type: object
+      properties:
+        stops:
+          type: array
+          items: { $ref: '#/components/schemas/Stop' }
+    StopResolve:
+      type: object
+      properties:
+        stopCode: { type: string }
+        matchType: { type: string }
+        stop: { $ref: '#/components/schemas/Pole' }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/Stop' }
+
+    Node:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+        poleCount: { type: integer }
+        poleIds: { type: array, items: { type: string } }
+        routes: { type: array, items: { $ref: '#/components/schemas/Route' } }
+        spokenName: { type: string }
+        zones: { type: array, items: { type: integer } }
+        distanceMeters: { type: integer }
+    NodeDetail:
+      allOf:
+        - $ref: '#/components/schemas/Node'
+        - type: object
+          properties:
+            poles: { type: array, items: { $ref: '#/components/schemas/Pole' } }
+            dispatcherMessage: { type: string }
+            serverDateTime: { type: string }
+    Pole:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        stopCode: { type: string }
+        stopSymbol: { type: string }
+        groupSymbol: { type: string }
+        poleNumber: { type: integer }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+        streetName: { type: string }
+        spokenName: { type: string }
+        zone: { type: string }
+        remarks: { type: string }
+        onDemand: { type: boolean }
+        distanceMeters: { type: integer }
+        routes: { type: array, items: { $ref: '#/components/schemas/RouteWithDirections' } }
+        nextDeparture: { $ref: '#/components/schemas/Departure' }
+    RouteWithDirections:
+      allOf:
+        - $ref: '#/components/schemas/Route'
+        - type: object
+          properties:
+            directions:
+              type: array
+              items:
+                type: object
+                properties:
+                  direction: { type: string }
+                  headsign: { type: string }
+                  patternId: { type: string }
+                  nextDepartures: { type: array, items: { $ref: '#/components/schemas/Departure' } }
+
+    StopGroup:
+      type: object
+      properties:
+        stopCode: { type: string }
+        groupSymbol: { type: string }
+        name: { type: string }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+        poleCount: { type: integer }
+        poleIds: { type: array, items: { type: string } }
+        routes: { type: array, items: { $ref: '#/components/schemas/Route' } }
+        streetName: { type: string }
+        zone: { type: string }
+        zones: { type: array, items: { type: integer } }
+        distanceMeters: { type: integer }
+    StopGroupDetail:
+      allOf:
+        - $ref: '#/components/schemas/StopGroup'
+        - type: object
+          properties:
+            poles: { type: array, items: { $ref: '#/components/schemas/Pole' } }
+            dispatcherMessage: { type: string }
+            serverDateTime: { type: string }
+            spokenName: { type: string }
+
+    UpcomingDepartures:
+      type: object
+      properties:
+        serverDateTime: { type: string, example: '2026-11-17T14:41:41' }
+        dayTypes: { type: array, items: { $ref: '#/components/schemas/DayType' } }
+        stops: { type: array, items: { $ref: '#/components/schemas/StopDepartures' } }
+    DayType:
+      type: object
+      properties:
+        symbol: { type: string }
+        name: { type: string }
+        sortOrder: { type: integer }
+    StopDepartures:
+      type: object
+      properties:
+        stop: { $ref: '#/components/schemas/StopRef' }
+        zone: { type: string }
+        dispatcherMessage: { type: string }
+        departures: { type: array, items: { $ref: '#/components/schemas/Departure' } }
+    StopRef:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        stopCode: { type: string }
+        poleNumber: { type: integer }
+        spokenName: { type: string }
+    Departure:
+      type: object
+      properties:
+        stopId: { type: string }
+        stop: { $ref: '#/components/schemas/Stop' }
+        stopSequence: { type: integer }
+        route: { $ref: '#/components/schemas/Route' }
+        trip: { $ref: '#/components/schemas/TripRef' }
+        pattern: { $ref: '#/components/schemas/PatternRef' }
+        vehicle: { $ref: '#/components/schemas/Vehicle' }
+        time: { $ref: '#/components/schemas/DepartureTime' }
+        remarks: { type: array, items: { $ref: '#/components/schemas/Remark' } }
+        detoured: { type: boolean }
+        dispatcherMessage: { type: string }
+    DepartureTime:
+      type: object
+      description: Czas odjazdu — planowy i rzeczywisty (na żywo)
+      properties:
+        planned: { type: string }
+        plannedClock: { type: string, example: '14:41' }
+        real: { type: string }
+        realClock: { type: string }
+        formatted: { type: string }
+        format: { type: string }
+        isLive: { type: boolean }
+        delaySeconds: { type: integer }
+        secondsLeft: { type: integer }
+    Remark:
+      type: object
+      properties:
+        symbol: { type: string }
+        label: { type: string }
+        description: { type: string }
+    VehicleDepartures:
+      type: object
+      properties:
+        serverDateTime: { type: string }
+        vehicle: { $ref: '#/components/schemas/Vehicle' }
+        departures: { type: array, items: { $ref: '#/components/schemas/VehicleDeparture' } }
+    VehicleDeparture:
+      type: object
+      properties:
+        stopId: { type: string }
+        stop: { $ref: '#/components/schemas/StopRef' }
+        stopSequence: { type: integer }
+        time: { $ref: '#/components/schemas/DepartureTime' }
+        remarks: { type: array, items: { $ref: '#/components/schemas/Remark' } }
+        dispatcherMessage: { type: string }
+
+    Timetable:
+      type: object
+      properties:
+        serviceDate: { type: string, format: date }
+        dayType: { type: string }
+        dayTypes: { type: array, items: { $ref: '#/components/schemas/DayType' } }
+        routes: { type: array, items: { $ref: '#/components/schemas/TimetableRoute' } }
+        hours: { type: array, items: { $ref: '#/components/schemas/TimetableHour' } }
+        legend: { type: array, items: { $ref: '#/components/schemas/Remark' } }
+        validFrom: { type: string, format: date }
+        timetableVersion: { type: string }
+    TimetableRoute:
+      type: object
+      properties:
+        id: { type: string }
+        number: { type: string }
+        transportType: { type: string }
+        sortOrder: { type: integer }
+        legend: { type: array, items: { $ref: '#/components/schemas/Remark' } }
+    TimetableHour:
+      type: object
+      properties:
+        hour: { type: integer }
+        minutes: { type: array, items: { $ref: '#/components/schemas/TimetableMinute' } }
+    TimetableMinute:
+      type: object
+      properties:
+        minute: { type: integer }
+        routeNumber: { type: string }
+        headsign: { type: string }
+        tripId: { type: string }
+        status: { type: string }
+        remarkSymbols: { type: array, items: { type: string } }
+        weekdays: { type: array, items: { type: string } }
+    TimetablePlan:
+      type: object
+      properties:
+        todayDayType: { type: string }
+        validFrom: { type: string, format: date }
+        timetableVersion: { type: string }
+        dayTypes: { type: array, items: { $ref: '#/components/schemas/DayTypeWithHours' } }
+        routes: { type: array, items: { $ref: '#/components/schemas/TimetableRoute' } }
+        legend: { type: array, items: { $ref: '#/components/schemas/Remark' } }
+    DayTypeWithHours:
+      allOf:
+        - $ref: '#/components/schemas/DayType'
+        - type: object
+          properties:
+            printOrder: { type: integer }
+            hours: { type: array, items: { $ref: '#/components/schemas/TimetableHour' } }
+
+    Route:
+      type: object
+      properties:
+        id: { type: string }
+        number: { type: string }
+        name: { type: string }
+        lineType: { type: string }
+        transportType: { type: string, example: BUS }
+        sortOrder: { type: integer }
+        upcomingChange: { $ref: '#/components/schemas/UpcomingChange' }
+    UpcomingChange:
+      type: object
+      properties:
+        kind: { type: string }
+        validFrom: { type: string, format: date }
+    RoutesResponse:
+      type: object
+      properties:
+        meta:
+          type: object
+          properties:
+            transportTypes: { type: array, items: { type: string } }
+            lineTypes: { type: array, items: { type: string } }
+            secondaryTypes: { type: array, items: { $ref: '#/components/schemas/SecondaryType' } }
+        routes: { type: array, items: { $ref: '#/components/schemas/RouteExt' } }
+    SecondaryType:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        symbol: { type: string }
+        color: { type: string }
+    RouteExt:
+      allOf:
+        - $ref: '#/components/schemas/Route'
+        - type: object
+          properties:
+            code: { type: integer }
+            secondaryTypeId: { type: string }
+            agency: { $ref: '#/components/schemas/Agency' }
+            directions: { type: array, items: { $ref: '#/components/schemas/PatternRef' } }
+            detours: { type: array, items: { $ref: '#/components/schemas/Detour' } }
+    Agency:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+    Detour:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        reason: { type: string }
+        validFrom: { type: string }
+        validTo: { type: string }
+    PatternRef:
+      type: object
+      properties:
+        id: { type: string }
+        direction: { type: string }
+        headsign: { type: string }
+        symbol: { type: string }
+    TripRef:
+      type: object
+      properties:
+        id: { type: string }
+        shortId: { type: string }
+        dayTypeSymbol: { type: string }
+        plannedStart: { type: string }
+        detourId: { type: string }
+
+    Pattern:
+      allOf:
+        - $ref: '#/components/schemas/PatternRef'
+        - type: object
+          properties:
+            routeId: { type: string }
+            geometry: { type: string, description: 'Zakodowana geometria trasy (polyline).' }
+            stopsCount: { type: integer }
+            stops: { type: array, items: { $ref: '#/components/schemas/PatternStop' } }
+            detour: { $ref: '#/components/schemas/Detour' }
+    PatternStop:
+      type: object
+      properties:
+        sequence: { type: integer }
+        stop: { $ref: '#/components/schemas/Stop' }
+        detoured: { type: boolean }
+        onDemand: { type: boolean }
+
+    RouteGraph:
+      type: object
+      properties:
+        route: { $ref: '#/components/schemas/RouteExt' }
+        directions: { type: array, items: { $ref: '#/components/schemas/GraphDirection' } }
+    GraphDirection:
+      type: object
+      properties:
+        direction: { type: string }
+        headsign: { type: string }
+        isMain: { type: boolean }
+        mainPatternId: { type: string }
+        patterns: { type: array, items: { $ref: '#/components/schemas/GraphPattern' } }
+        branches: { type: array, items: { $ref: '#/components/schemas/GraphBranch' } }
+        spine: { type: array, items: { $ref: '#/components/schemas/GraphNode' } }
+    GraphPattern:
+      type: object
+      properties:
+        patternId: { type: string }
+        symbol: { type: string }
+        headsign: { type: string }
+        isMain: { type: boolean }
+        detached: { type: boolean }
+        stopsCount: { type: integer }
+        detour: { $ref: '#/components/schemas/Detour' }
+    GraphBranch:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        fromIndex: { type: integer }
+        toIndex: { type: integer }
+        patternIds: { type: array, items: { type: string } }
+        nodes: { type: array, items: { $ref: '#/components/schemas/GraphNode' } }
+    GraphNode:
+      type: object
+      properties:
+        stop: { $ref: '#/components/schemas/Stop' }
+        onDemand: { type: boolean }
+        patternIds: { type: array, items: { type: string } }
+
+    TripDetail:
+      type: object
+      properties:
+        serverDateTime: { type: string }
+        serviceDate: { type: string, format: date }
+        route: { $ref: '#/components/schemas/Route' }
+        trip: { $ref: '#/components/schemas/TripRef' }
+        pattern: { $ref: '#/components/schemas/PatternRef' }
+        vehicle: { $ref: '#/components/schemas/Vehicle' }
+        geometry: { type: string }
+        dispatcherMessage: { type: string }
+        departures: { type: array, items: { $ref: '#/components/schemas/Departure' } }
+
+    Vehicle:
+      type: object
+      properties:
+        id: { type: string }
+        sideNumber: { type: integer, description: Numer boczny pojazdu }
+        transportType: { type: string, example: BUS }
+        state: { type: integer }
+        flags: { type: string }
+        inService: { type: boolean }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+        bearing: { type: number, format: double }
+        hasValidPosition: { type: boolean }
+        frameTime: { type: string }
+        delaySeconds: { type: integer }
+        secondsToDeparture: { type: integer }
+        stopSequence: { type: integer }
+        currentSectionDistance: { type: integer, format: int64 }
+        plannedSectionDistance: { type: integer, format: int64 }
+        variance: { type: integer }
+        loadFactor: { type: integer }
+        loadLevel: { type: string }
+        route: { $ref: '#/components/schemas/Route' }
+        nextRoute: { $ref: '#/components/schemas/Route' }
+        trip: { $ref: '#/components/schemas/TripRef' }
+        nextTrip: { $ref: '#/components/schemas/TripRef' }
+        pattern: { $ref: '#/components/schemas/PatternRef' }
+        nextPattern: { $ref: '#/components/schemas/PatternRef' }
+        task: { $ref: '#/components/schemas/Task' }
+        brand: { $ref: '#/components/schemas/Brand' }
+        features: { type: array, items: { $ref: '#/components/schemas/VehicleFeature' } }
+    Task:
+      type: object
+      properties:
+        id: { type: string }
+        number: { type: string }
+    Brand:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        model: { type: string }
+        electric: { type: boolean }
+    VehicleFeature:
+      type: object
+      properties:
+        code: { type: string }
+        name: { type: string }
+    Vehicles:
+      type: object
+      properties:
+        serverDateTime: { type: string }
+        runningCountsByRoute: { type: object, additionalProperties: { type: integer } }
+        vehicles: { type: array, items: { $ref: '#/components/schemas/Vehicle' } }
+
+    PlanOptions:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        modes: { type: array, items: { type: string } }
+        maxTransfers: { $ref: '#/components/schemas/Range' }
+        transferRadiusMeters: { type: integer }
+        transferModes: { type: array, items: { $ref: '#/components/schemas/TransferMode' } }
+        sortingModes: { type: array, items: { $ref: '#/components/schemas/TransferMode' } }
+        bikes:
+          type: object
+          properties:
+            own: { type: boolean }
+            rental: { type: boolean }
+        vehicleFeatures: { type: array, items: { type: string } }
+    Range:
+      type: object
+      properties:
+        min: { type: integer }
+        max: { type: integer }
+        default: { type: integer }
+    TransferMode:
+      type: object
+      properties:
+        id: { type: integer }
+        token: { type: string, example: arrivalTime }
+        radiusMeters: { type: integer }
+    OtpItinerary:
+      type: object
+      description: Wariant podróży w formacie OpenTripPlanner 2.
+      properties:
+        duration: { type: integer }
+        startTime: { type: string }
+        endTime: { type: string }
+        legs: { type: array, items: { $ref: '#/components/schemas/OtpLeg' } }
+    OtpLeg:
+      type: object
+      properties:
+        mode: { type: string }
+        routeId: { type: string, description: 'Z prefiksem agencji, np. AG:123.' }
+        tripId: { type: string, description: 'Z prefiksem agencji.' }
+        from: { type: object }
+        to: { type: object }
+        intermediateStops: { type: array, items: { type: object } }
+        legGeometry: { type: object }
+
+    ItineraryLive:
+      type: object
+      properties:
+        serverDateTime: { type: string }
+        legs: { type: array, items: { $ref: '#/components/schemas/LiveLeg' } }
+    LiveLeg:
+      type: object
+      properties:
+        tripId: { type: string }
+        serviceDate: { type: string, format: date }
+        route: { $ref: '#/components/schemas/Route' }
+        headsign: { type: string }
+        boardingStopId: { type: string }
+        alightingStopId: { type: string }
+        plannedBoardingTime: { type: string }
+        realBoardingTime: { type: string }
+        plannedAlightingTime: { type: string }
+        realAlightingTime: { type: string }
+        delaySeconds: { type: integer }
+        isLive: { type: boolean }
+        found: { type: boolean }
+        notFoundReason: { type: string }
+        cancelled: { type: boolean }
+        vehiclePastBoardingStop: { type: boolean }
+        vehicle: { $ref: '#/components/schemas/Vehicle' }
+        dispatcherMessage: { type: string }
+
+    Message:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        title: { type: string }
+        message: { type: string }
+        validFrom: { type: string }
+        validTo: { type: string }
+    CalendarDay:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        dayType: { type: string }
+        dayTypeName: { type: string }
+        hasService: { type: boolean }
+        isTimetableChange: { type: boolean }
+        timetableValidFrom: { type: string, format: date }
+        timetableVersion: { type: string }
+    Summary:
+      type: object
+      properties:
+        serverDateTime: { type: string }
+        vehiclesInServiceCount: { type: integer }
+        activeMessagesCount: { type: integer }
+        nearbyStopsCount: { type: integer }
+        messagesRevision: { type: string }
+        topMessage: { $ref: '#/components/schemas/Message' }
+        favorites: { type: array, items: { $ref: '#/components/schemas/StopDepartures' } }
+    Zone:
+      type: object
+      properties:
+        zone: { type: string }
+        name: { type: string }
+        approximate: { type: boolean }
+        polygons: { type: array, items: { $ref: '#/components/schemas/Polygon' } }
+    Polygon:
+      type: object
+      properties:
+        outer: { type: array, items: { type: array, items: { type: number }, description: '[lon, lat]' } }
+        holes: { type: array, items: { type: array, items: { type: array, items: { type: number } } } }
+    BikeShare:
+      type: object
+      properties:
+        system:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+        refreshSeconds: { type: integer }
+        updatedAt: { type: string }
+        stations: { type: array, items: { $ref: '#/components/schemas/BikeStation' } }
+    BikeStation:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+        bikesAvailable: { type: integer }
+        electricBikesAvailable: { type: integer }
+        docksAvailable: { type: integer }
+        radiusMeters: { type: integer }
+        virtual: { type: boolean }
+    BikeShareArea:
+      type: object
+      properties:
+        name: { type: string }
+        type: { type: string }
+        polygons: { type: array, items: { $ref: '#/components/schemas/Polygon' } }
+    GeocodeResult:
+      type: object
+      properties:
+        name: { type: string }
+        fullAddress: { type: string }
+        street: { type: string }
+        houseNumber: { type: string }
+        district: { type: string }
+        locality: { type: string }
+        postcode: { type: string }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+        type: { type: string, example: busStop }
+        source: { type: string }
+        sourceId: { type: string }
+    GeocodeReverse:
+      type: object
+      properties:
+        queriedLat: { type: number, format: double }
+        queriedLon: { type: number, format: double }
+        name: { type: string }
+        fullAddress: { type: string }
+        street: { type: string }
+        houseNumber: { type: string }
+        district: { type: string }
+        locality: { type: string }
+        postcode: { type: string }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+        nearestStops: { type: array, items: { $ref: '#/components/schemas/Stop' } }
