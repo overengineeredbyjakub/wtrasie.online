@@ -1,1 +1,77 @@
-:)
+{
+  "latest": {
+    "versionCode": 15,
+    "versionName": "alpha-1.7.0",
+    "releasedAt": "2026-11-19",
+    "force": false,
+    "apkUrl": "https://github.com/overengineeredbyjakub/wtrasie.online/raw/main/apk/wtrasie-alpha-1.7.0.apk",
+    "changes": {
+      "pl": [
+        "Serwer wtrasie jako źródło danych (z automatycznym powrotem do zbiorkom.live, gdy serwer nie odpowiada)",
+        "Kontroler wersji: popup aktualizacji z listą zmian, pobieranie i instalacja APK z poziomu aplikacji (FLAGA force = aktualizacja obowiązkowa)",
+        "Panel debugowania: adres API, adres kontrolera wersji, tryb pobierania bezpośrednio ze zbiorkom.live",
+        "Naprawa znikania ustawień po długim trzymaniu aplikacji w tle",
+        "Polski i angielski interfejs + kreator pierwszego uruchomienia (język z flagami, potem miasto)",
+        "Menu pojazdów: bez pociągów, z naturalnym sortowaniem linii (1, 2, 3, 11, 33, 304), tytuł Pojazdy <miasto>",
+        "Linie odświeżają się natychmiast po zmianie miasta (koniec z liniami Rzeszowa w Helsinkach)",
+        "Pojazd, który nie rozpoczął kursu: napis \"Autobus nie rozpoczął tego kursu\", godziny HH:MM zamiast minut, ikona Twojego przystanku na trasie (koniec z mylącym markerem na pierwszym przystanku)",
+        "Przycisk back cofa się też wewnątrz paneli (rozkład -> kafelki linii -> tablica odjazdów)",
+        "Znaczniki przystanków domyślnie od zoomu 14 (było 15)",
+        "Usunięto ekran \"Jak używać\"",
+        "APK odchudzony z 53 MB do ~14 MB"
+      ],
+      "en": [
+        "wtrasie server as the data source (automatic fallback to zbiorkom.live when the server is unreachable)",
+        "Version controller: update popup with the changelog, in-app APK download & install (FORCE flag = mandatory update)",
+        "Debug panel: API URL, version-controller URL, download-straight-from-zbiorkom.live mode",
+        "Fixed settings disappearing after keeping the app in the background for a long time",
+        "Polish and English UI + first-boot wizard (language with flags, then the city)",
+        "Vehicles menu: no trains, natural line ordering (1, 2, 3, 11, 33, 304), title Vehicles <city>",
+        "Lines refresh instantly after a city switch (no more Rzeszów lines while looking at Helsinki)",
+        "A vehicle that has not started its run: \"The bus has not started this run\" notice, HH:MM times instead of minutes, your stop's icon on the route (no more misleading marker at the first stop)",
+        "The back button also steps back inside panels (timetable -> line tiles -> departures board)",
+        "Stop markers from zoom 14 by default (was 15)",
+        "Removed the \"How to use\" screen",
+        "APK slimmed down from 53 MB to ~14 MB"
+      ]
+    }
+  },
+  "versions": [
+    {
+      "versionCode": 15,
+      "versionName": "alpha-1.7.0",
+      "releasedAt": "2026-11-19",
+      "force": false,
+      "apkUrl": "https://github.com/overengineeredbyjakub/wtrasie.online/raw/main/apk/wtrasie-alpha-1.7.0.apk",
+      "changes": {
+        "pl": ["Serwer wtrasie + kontroler wersji + panel debugowania", "PL/EN + kreator pierwszego uruchomienia", "Naprawa ustawień, menu pojazdów, sortowanie liniowe, kursy nie rozpoczęte, przycisk back", "APK ~14 MB"],
+        "en": ["wtrasie server + version controller + debug panel", "PL/EN + first-boot wizard", "Settings fix, vehicles menu, natural sorting, not-started runs, back button", "APK ~14 MB"]
+      }
+    },
+    {
+      "versionCode": 14,
+      "versionName": "alpha-1.6.4",
+      "releasedAt": "2026-11-16",
+      "force": false,
+      "changes": {
+        "pl": ["Kopia lustrzana ustawień (settings_mirror.json) z samonaprawą przy starcie", "Odtwarzanie sesji po zabiciu procesu: podglądany pojazd, otwarty przystanek, aktywna zakładka"],
+        "en": ["Settings mirror (settings_mirror.json) with startup self-heal", "Session restore after process death: previewed vehicle, open stop, active tab"]
+      }
+    },
+    {
+      "versionCode": 13,
+      "versionName": "alpha-1.6.3",
+      "releasedAt": "2026-11-15",
+      "force": false,
+      "changes": {
+        "pl": ["Przełącznik \"Używaj mojej lokalizacji\"", "Marker podglądanego pojazdu zostaje na mapie", "Automatyczne przejście z kursu planowego na żywo"],
+        "en": ["\"Use my location\" switch", "Previewed vehicle marker stays on the map", "Automatic planned-to-live switch"]
+      }
+    }
+  ],
+  "api": {
+    "base": "http://79.76.100.245/api/v1",
+    "fallback": "https://api.zbiorkom.live/api6-open/",
+    "note": "base = domyślny serwer danych apki (proxy zbiorkom.live); fallback = bezpośrednio ze zbiorkom.live (panel debugowania)"
+  }
+}
